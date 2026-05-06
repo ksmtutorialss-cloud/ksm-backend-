@@ -17,11 +17,11 @@ import os
 from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from psycopg2.pool import SimpleConnectionPool
 from contextlib import contextmanager
 from dotenv import load_dotenv
 import sendgrid
-from sendgrid.helpers.mail import Mail, Email, To, Content, Attachment, FileContent, FileName, FileType, Disposition
+from sendgrid.helpers.mail import Mail
+import time
 
 # Load environment variables
 load_dotenv()
@@ -38,27 +38,115 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-this-secret-key")
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Database connection pool
-pool = SimpleConnectionPool(
-    minconn=1,
-    maxconn=20,
-    dsn=DATABASE_URL,
-    cursor_factory=RealDictCursor
-)
+# Database connection with keepalive
+def get_db_url():
+    """Ensure proper SSL and connection parameters"""
+    url = DATABASE_URL
+    if not url:
+        return None
+    if '?' not in url:
+        url += '?sslmode=require'
+    elif 'sslmode' not in url:
+        url += '&sslmode=require'
+    
+    # Add keepalive parameters to prevent connection drops
+    url += '&connect_timeout=30'
+    
+    return url
+
+class RobustConnectionPool:
+    def __init__(self, minconn=1, maxconn=10):
+        self.minconn = minconn
+        self.maxconn = maxconn
+        self.pool = None
+        self._init_pool()
+    
+    def _init_pool(self):
+        try:
+            db_url = get_db_url()
+            if not db_url:
+                print("⚠️ No DATABASE_URL found")
+                return
+                
+            self.pool = psycopg2.pool.SimpleConnectionPool(
+                minconn=self.minconn,
+                maxconn=self.maxconn,
+                dsn=db_url,
+                cursor_factory=RealDictCursor,
+                keepalives=1,
+                keepalives_idle=5,
+                keepalives_interval=2,
+                keepalives_count=3
+            )
+            print("✅ Database connection pool initialized successfully")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize pool: {e}")
+            self.pool = None
+    
+    def get_connection(self, retries=3, delay=1):
+        """Get connection with retry logic"""
+        for attempt in range(retries):
+            try:
+                if self.pool is None:
+                    self._init_pool()
+                    if self.pool is None:
+                        time.sleep(delay)
+                        continue
+                
+                conn = self.pool.getconn()
+                # Test connection with a simple query
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                return conn
+            except Exception as e:
+                print(f"Connection attempt {attempt + 1} failed: {e}")
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    self._reset_pool()
+                else:
+                    raise
+    
+    def _reset_pool(self):
+        """Reset the connection pool"""
+        try:
+            if self.pool:
+                self.pool.closeall()
+        except:
+            pass
+        self.pool = None
+        self._init_pool()
+    
+    def put_connection(self, conn):
+        """Return connection to pool safely"""
+        try:
+            if self.pool and conn:
+                self.pool.putconn(conn)
+        except Exception as e:
+            print(f"Error returning connection: {e}")
+
+# Create the pool instance
+pool = RobustConnectionPool(minconn=1, maxconn=10)
 
 @contextmanager
 def get_cursor():
-    conn = pool.getconn()
-    cursor = conn.cursor()
+    """Get database cursor with automatic retry on connection issues"""
+    conn = None
+    cursor = None
     try:
+        conn = pool.get_connection()
+        cursor = conn.cursor()
         yield cursor
         conn.commit()
     except Exception as e:
-        conn.rollback()
+        if conn:
+            conn.rollback()
+        print(f"Database error: {e}")
         raise e
     finally:
-        cursor.close()
-        pool.putconn(conn)
+        if cursor:
+            cursor.close()
+        if conn:
+            pool.put_connection(conn)
 
 # SendGrid email helper
 def send_email(to_email: str, subject: str, html_content: str):
@@ -218,33 +306,35 @@ def send_edit_request_approved_email(to_email: str, student_name: str):
     """
     return send_email(to_email, "Profile Update Approved - KSM Tutorials", html)
 
-# 1. CREATE APP FIRST
+# Create FastAPI app
 app = FastAPI()
 
-# 2. ADD CORS MIDDLEWARE
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-    'https://ksm-frontend-six.vercel.app',  # ← YOUR CURRENT URL
-    'http://localhost:3000',
-    'http://localhost:5173',
+        'https://ksm-frontend-six.vercel.app',
+        'https://ksm-frontend-git-main-yours.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:5173',
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 3. CREATE SOCKET.IO
+# Create Socket.IO
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
         'https://ksm-frontend-six.vercel.app',
+        'https://ksm-frontend-git-main-yours.vercel.app',
         'http://localhost:3000',
         'http://localhost:5173',
     ],
     async_mode='asgi'
 )
 
-# 4. CREATE SOCKET APP
+# Create socket app
 socket_app = socketio.ASGIApp(sio, app)
 
 def verify_admin(authorization: Optional[str] = Header(None)):
@@ -259,231 +349,244 @@ def verify_admin(authorization: Optional[str] = Header(None)):
 
 def init_db():
     """Initialize database tables on Neon"""
-    with get_cursor() as cursor:
-        # Students table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS students (
-            id SERIAL PRIMARY KEY,
-            reg_id TEXT UNIQUE,
-            full_name TEXT,
-            student_id TEXT UNIQUE,
-            email TEXT,
-            phone TEXT,
-            password TEXT,
-            programme TEXT,
-            level INTEGER,
-            courses TEXT,
-            total_amount REAL,
-            payment_status TEXT DEFAULT 'pending',
-            registered_at TEXT,
-            certificate_released INTEGER DEFAULT 0,
-            certificate_released_at TEXT
-        )
-        """)
-        
-        # Admins table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE,
-            password TEXT
-        )
-        """)
-        
-        # Admin tokens table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS admin_tokens (
-            id SERIAL PRIMARY KEY,
-            token TEXT UNIQUE,
-            created_at TEXT,
-            expires_at TEXT
-        )
-        """)
-        
-        # Courses table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS courses (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            level INTEGER,
-            price REAL,
-            instructor TEXT,
-            schedule_day TEXT,
-            schedule_time TEXT,
-            venue TEXT,
-            description TEXT,
-            icon TEXT DEFAULT 'FaCode',
-            registered_count INTEGER DEFAULT 0
-        )
-        """)
-        
-        # Comments table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS comments (
-            id SERIAL PRIMARY KEY,
-            user_name TEXT,
-            rating INTEGER,
-            content TEXT,
-            likes INTEGER DEFAULT 0,
-            parent_id INTEGER DEFAULT NULL,
-            created_at TEXT
-        )
-        """)
-        
-        # Settings table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            id SERIAL PRIMARY KEY,
-            key TEXT UNIQUE,
-            value TEXT
-        )
-        """)
-        
-        # Director Message table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS director_messages (
-            id SERIAL PRIMARY KEY,
-            content TEXT,
-            signature TEXT,
-            updated_at TEXT
-        )
-        """)
-        
-        # Tutors table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tutors (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            specialization TEXT,
-            experience TEXT,
-            image TEXT,
-            email TEXT,
-            linkedin TEXT,
-            image_url TEXT
-        )
-        """)
-        
-        # Announcements table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS announcements (
-            id SERIAL PRIMARY KEY,
-            title TEXT,
-            content TEXT,
-            type TEXT,
-            date TEXT
-        )
-        """)
-        
-        # Partners table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS partners (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            icon TEXT,
-            link TEXT,
-            color TEXT
-        )
-        """)
-        
-        # Activity logs table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id SERIAL PRIMARY KEY,
-            action TEXT,
-            admin_name TEXT,
-            details TEXT,
-            created_at TEXT
-        )
-        """)
-        
-        # Support Tickets table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS support_tickets (
-            id SERIAL PRIMARY KEY,
-            student_id INTEGER,
-            student_name TEXT,
-            student_email TEXT,
-            subject TEXT,
-            message TEXT,
-            status TEXT DEFAULT 'open',
-            admin_reply TEXT,
-            created_at TEXT,
-            updated_at TEXT
-        )
-        """)
-        
-        # Edit Requests table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS edit_requests (
-            id SERIAL PRIMARY KEY,
-            student_id INTEGER,
-            student_name TEXT,
-            requested_data TEXT,
-            status TEXT DEFAULT 'pending',
-            admin_response TEXT,
-            created_at TEXT,
-            responded_at TEXT
-        )
-        """)
-        
-        # Check if admin exists
-        cursor.execute("SELECT * FROM admins WHERE username=%s", (ADMIN_USERNAME,))
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", 
-                          (ADMIN_USERNAME, ADMIN_PASSWORD_HASH))
-            print(f"✅ Default admin created: {ADMIN_USERNAME} / admin123")
-        
-        # Check if settings exist
-        cursor.execute("SELECT * FROM settings")
-        if not cursor.fetchone():
-            default_settings = [
-                ("deadline", "2026-12-31T23:59:00"),
-                ("whatsapp_link", "https://chat.whatsapp.com/KSM2026"),
-                ("contact_email", FROM_EMAIL),
-                ("contact_phone", "+233 24 123 4567")
-            ]
-            for key, value in default_settings:
-                cursor.execute("INSERT INTO settings (key, value) VALUES (%s, %s)", (key, value))
-        
-        # Check if courses exist
-        cursor.execute("SELECT * FROM courses")
-        if not cursor.fetchone():
-            default_courses = [
-                ("Programming (C++)", 100, 120, "Dr. Mensah", "Saturday", "9:00 AM", "IT Lab 301", "Learn C++ programming fundamentals", "FaCode", 0),
-                ("Web Design", 100, 120, "Prof. Abena", "Saturday", "11:00 AM", "IT Lab 302", "Master HTML5, CSS3, JavaScript", "FaLaptopCode", 0),
-                ("Database (MySQL)", 100, 120, "Mr. Kofi", "Saturday", "1:00 PM", "IT Lab 303", "Database design and SQL queries", "FaDatabase", 0),
-                ("Java OOP", 200, 120, "Dr. Esi", "Sunday", "9:00 AM", "IT Lab 301", "Object-Oriented Programming with Java", "FaCode", 0),
-                ("Networking", 200, 120, "Prof. Kwame", "Saturday", "9:00 AM", "IT Lab 302", "Network protocols and OSI model", "FaNetworkWired", 0),
-                ("Data Structures", 200, 120, "Dr. Ama", "Sunday", "1:00 PM", "IT Lab 303", "Arrays, linked lists, trees, graphs", "FaCode", 0),
-                ("Unix Programming", 300, 120, "Mr. Yaw", "Saturday", "2:00 PM", "IT Lab 301", "Linux commands and shell scripting", "FaLinux", 0),
-                ("AI & Machine Learning", 300, 120, "Dr. Grace", "Saturday", "4:00 PM", "Online", "Introduction to AI and Machine Learning", "FaBrain", 0),
-                ("Cybersecurity", 300, 120, "Prof. Atta", "Sunday", "2:00 PM", "IT Lab 302", "Security principles and ethical hacking", "FaShieldAlt", 0),
-                ("Mobile Development", 400, 120, "Dr. Owusu", "Saturday", "9:00 AM", "IT Lab 301", "Android/iOS app development", "FaMobileAlt", 0),
-                ("Project Management", 400, 120, "Mr. Danso", "Saturday", "11:00 AM", "IT Lab 302", "Agile, Scrum, project planning", "FaChartBar", 0),
-                ("Research Methods", 400, 120, "Prof. Adwoa", "Saturday", "1:00 PM", "IT Lab 303", "Academic research and thesis writing", "FaBook", 0),
-            ]
-            for c in default_courses:
-                cursor.execute("INSERT INTO courses (name, level, price, instructor, schedule_day, schedule_time, venue, description, icon, registered_count) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", c)
-        
-        # Check if director message exists
-        cursor.execute("SELECT * FROM director_messages")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO director_messages (content, signature, updated_at) VALUES (%s, %s, %s)",
-                          ("For over 5 years, KSM Tutorials has been dedicated to helping IT and Computer Science students at the University of Cape Coast achieve academic excellence.",
-                           "Mr. KSM - Founder & Lead Tutor", datetime.now().isoformat()))
+    try:
+        with get_cursor() as cursor:
+            # Students table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS students (
+                id SERIAL PRIMARY KEY,
+                reg_id TEXT UNIQUE,
+                full_name TEXT,
+                student_id TEXT UNIQUE,
+                email TEXT,
+                phone TEXT,
+                password TEXT,
+                programme TEXT,
+                level INTEGER,
+                courses TEXT,
+                total_amount REAL,
+                payment_status TEXT DEFAULT 'pending',
+                registered_at TEXT,
+                certificate_released INTEGER DEFAULT 0,
+                certificate_released_at TEXT
+            )
+            """)
+            
+            # Admins table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE,
+                password TEXT
+            )
+            """)
+            
+            # Admin tokens table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS admin_tokens (
+                id SERIAL PRIMARY KEY,
+                token TEXT UNIQUE,
+                created_at TEXT,
+                expires_at TEXT
+            )
+            """)
+            
+            # Courses table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS courses (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                level INTEGER,
+                price REAL,
+                instructor TEXT,
+                schedule_day TEXT,
+                schedule_time TEXT,
+                venue TEXT,
+                description TEXT,
+                icon TEXT DEFAULT 'FaCode',
+                registered_count INTEGER DEFAULT 0
+            )
+            """)
+            
+            # Comments table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS comments (
+                id SERIAL PRIMARY KEY,
+                user_name TEXT,
+                rating INTEGER,
+                content TEXT,
+                likes INTEGER DEFAULT 0,
+                parent_id INTEGER DEFAULT NULL,
+                created_at TEXT
+            )
+            """)
+            
+            # Settings table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                id SERIAL PRIMARY KEY,
+                key TEXT UNIQUE,
+                value TEXT
+            )
+            """)
+            
+            # Director Message table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS director_messages (
+                id SERIAL PRIMARY KEY,
+                content TEXT,
+                signature TEXT,
+                updated_at TEXT
+            )
+            """)
+            
+            # Tutors table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tutors (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                specialization TEXT,
+                experience TEXT,
+                image TEXT,
+                email TEXT,
+                linkedin TEXT,
+                image_url TEXT
+            )
+            """)
+            
+            # Announcements table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS announcements (
+                id SERIAL PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                type TEXT,
+                date TEXT
+            )
+            """)
+            
+            # Partners table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS partners (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                icon TEXT,
+                link TEXT,
+                color TEXT
+            )
+            """)
+            
+            # Activity logs table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id SERIAL PRIMARY KEY,
+                action TEXT,
+                admin_name TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+            """)
+            
+            # Support Tickets table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER,
+                student_name TEXT,
+                student_email TEXT,
+                subject TEXT,
+                message TEXT,
+                status TEXT DEFAULT 'open',
+                admin_reply TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """)
+            
+            # Edit Requests table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS edit_requests (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER,
+                student_name TEXT,
+                requested_data TEXT,
+                status TEXT DEFAULT 'pending',
+                admin_response TEXT,
+                created_at TEXT,
+                responded_at TEXT
+            )
+            """)
+            
+            # Check if admin exists
+            cursor.execute("SELECT * FROM admins WHERE username=%s", (ADMIN_USERNAME,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", 
+                              (ADMIN_USERNAME, ADMIN_PASSWORD_HASH))
+                print(f"✅ Default admin created: {ADMIN_USERNAME} / admin123")
+            
+            # Check if settings exist
+            cursor.execute("SELECT * FROM settings")
+            if not cursor.fetchone():
+                default_settings = [
+                    ("deadline", "2026-12-31T23:59:00"),
+                    ("whatsapp_link", "https://chat.whatsapp.com/KSM2026"),
+                    ("contact_email", FROM_EMAIL),
+                    ("contact_phone", "+233 24 123 4567")
+                ]
+                for key, value in default_settings:
+                    cursor.execute("INSERT INTO settings (key, value) VALUES (%s, %s)", (key, value))
+            
+            # Check if courses exist
+            cursor.execute("SELECT * FROM courses")
+            if not cursor.fetchone():
+                default_courses = [
+                    ("Programming (C++)", 100, 120, "Dr. Mensah", "Saturday", "9:00 AM", "IT Lab 301", "Learn C++ programming fundamentals", "FaCode", 0),
+                    ("Web Design", 100, 120, "Prof. Abena", "Saturday", "11:00 AM", "IT Lab 302", "Master HTML5, CSS3, JavaScript", "FaLaptopCode", 0),
+                    ("Database (MySQL)", 100, 120, "Mr. Kofi", "Saturday", "1:00 PM", "IT Lab 303", "Database design and SQL queries", "FaDatabase", 0),
+                    ("Java OOP", 200, 120, "Dr. Esi", "Sunday", "9:00 AM", "IT Lab 301", "Object-Oriented Programming with Java", "FaCode", 0),
+                    ("Networking", 200, 120, "Prof. Kwame", "Saturday", "9:00 AM", "IT Lab 302", "Network protocols and OSI model", "FaNetworkWired", 0),
+                    ("Data Structures", 200, 120, "Dr. Ama", "Sunday", "1:00 PM", "IT Lab 303", "Arrays, linked lists, trees, graphs", "FaCode", 0),
+                    ("Unix Programming", 300, 120, "Mr. Yaw", "Saturday", "2:00 PM", "IT Lab 301", "Linux commands and shell scripting", "FaLinux", 0),
+                    ("AI & Machine Learning", 300, 120, "Dr. Grace", "Saturday", "4:00 PM", "Online", "Introduction to AI and Machine Learning", "FaBrain", 0),
+                    ("Cybersecurity", 300, 120, "Prof. Atta", "Sunday", "2:00 PM", "IT Lab 302", "Security principles and ethical hacking", "FaShieldAlt", 0),
+                    ("Mobile Development", 400, 120, "Dr. Owusu", "Saturday", "9:00 AM", "IT Lab 301", "Android/iOS app development", "FaMobileAlt", 0),
+                    ("Project Management", 400, 120, "Mr. Danso", "Saturday", "11:00 AM", "IT Lab 302", "Agile, Scrum, project planning", "FaChartBar", 0),
+                    ("Research Methods", 400, 120, "Prof. Adwoa", "Saturday", "1:00 PM", "IT Lab 303", "Academic research and thesis writing", "FaBook", 0),
+                ]
+                for c in default_courses:
+                    cursor.execute("INSERT INTO courses (name, level, price, instructor, schedule_day, schedule_time, venue, description, icon, registered_count) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", c)
+            
+            # Check if director message exists
+            cursor.execute("SELECT * FROM director_messages")
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO director_messages (content, signature, updated_at) VALUES (%s, %s, %s)",
+                              ("For over 5 years, KSM Tutorials has been dedicated to helping IT and Computer Science students at the University of Cape Coast achieve academic excellence.",
+                               "Mr. KSM - Founder & Lead Tutor", datetime.now().isoformat()))
+            
+            print("✅ Database initialized successfully!")
+    except Exception as e:
+        print(f"⚠️ Database initialization error: {e}")
 
 # Initialize database on startup
 print("=" * 50)
 print("Initializing PostgreSQL database on Neon...")
 init_db()
-print("✅ Database initialized successfully!")
 print("=" * 50)
+
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    """Health check endpoint for Render"""
+    try:
+        with get_cursor() as cursor:
+            cursor.execute("SELECT 1")
+        return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        raise HTTPException(500, f"Database connection failed: {str(e)}")
 
 # ============================================================
 # PYDANTIC MODELS
 # ============================================================
-
-# (Keep all your existing Pydantic models - same as before)
 
 class StudentRegister(BaseModel):
     full_name: str
@@ -640,7 +743,7 @@ async def get_upload(filename: str):
     raise HTTPException(404, "File not found")
 
 # ============================================================
-# API ENDPOINTS (UPDATED with PostgreSQL syntax)
+# API ENDPOINTS
 # ============================================================
 
 @app.get("/")
@@ -1022,7 +1125,7 @@ def create_course(course: CourseCreate, admin: str = Depends(verify_admin)):
         cursor.execute("INSERT INTO activity_logs (action, admin_name, details, created_at) VALUES (%s, %s, %s, %s)",
                       ("create_course", "admin", f"Created course: {course.name}", datetime.now().isoformat()))
         
-        return {"message": "Course created", "id": cursor.fetchone()['id'] if hasattr(cursor, 'fetchone') else 1}
+        return {"message": "Course created"}
 
 @app.put("/api/admin/courses/{course_id}")
 def update_course(course_id: int, course: CourseCreate, admin: str = Depends(verify_admin)):
@@ -1226,7 +1329,7 @@ def create_tutor(tutor: TutorCreate, admin: str = Depends(verify_admin)):
             INSERT INTO tutors (name, specialization, experience, image, email, linkedin, image_url)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (tutor.name, tutor.specialization, tutor.experience, tutor.image, tutor.email, tutor.linkedin, tutor.image_url))
-        return {"message": "Tutor created", "id": cursor.fetchone()['id'] if hasattr(cursor, 'fetchone') else 1}
+        return {"message": "Tutor created"}
 
 @app.put("/api/admin/tutors/{tutor_id}")
 def update_tutor(tutor_id: int, tutor: TutorCreate, admin: str = Depends(verify_admin)):
@@ -1322,7 +1425,7 @@ def create_ticket(ticket: TicketCreate):
             VALUES (%s, %s, %s, %s, %s, 'open', %s)
         """, (ticket.student_id, ticket.student_name, ticket.student_email,
               ticket.subject, ticket.message, datetime.now().isoformat()))
-        return {"message": "Ticket created", "id": cursor.fetchone()['id'] if hasattr(cursor, 'fetchone') else 1}
+        return {"message": "Ticket created"}
 
 @app.get("/api/student/tickets/{student_id}")
 def get_student_tickets(student_id: int):
