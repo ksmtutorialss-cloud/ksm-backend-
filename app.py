@@ -1110,10 +1110,15 @@ async def add_comment(comment: CommentCreate):
         cursor.execute("""
             INSERT INTO comments (user_name, rating, content, parent_id, created_at)
             VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
         """, (comment.user_name, comment.rating, comment.content, comment.parent_id, datetime.now().isoformat()))
+        
+        result = cursor.fetchone()
+        new_id = result['id'] if result else 1
+        
         await sio.emit('new_comment', {"user_name": comment.user_name, "content": comment.content})
-        return {"message": "Comment added", "id": cursor.fetchone()['id'] if hasattr(cursor, 'fetchone') else 1}
-
+        return {"message": "Comment added", "id": new_id}
+        
 @app.post("/api/comments/{comment_id}/like")
 async def like_comment(comment_id: int):
     with get_cursor() as cursor:
