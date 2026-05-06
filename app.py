@@ -237,7 +237,7 @@ app.add_middleware(
 # 3. CREATE SOCKET.IO
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
-        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
+        'https://ksm-frontend-six.vercel.app',
         'http://localhost:3000',
         'http://localhost:5173',
     ],
