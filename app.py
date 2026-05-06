@@ -225,9 +225,10 @@ def send_edit_request_approved_email(to_email: str, student_name: str):
 # CREATE FASTAPI APP FIRST
 # ============================================================
 
+# CREATE APP FIRST
 app = FastAPI()
 
-# CORS Middleware
+# THEN ADD MIDDLEWARE
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -240,10 +241,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================
-# SOCKET.IO SETUP
-# ============================================================
-
+# THEN CREATE SOCKET.IO
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
         'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
