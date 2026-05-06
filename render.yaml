@@ -3,7 +3,7 @@ services:
     name: ksm-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:socket_app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app:socket_app --host 0.0.0.0 --port $PORT --timeout-keep-alive 120
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -15,4 +15,9 @@ services:
         value: ksm.tutorials@ucc.edu.gh
       - key: ADMIN_USERNAME
         value: admin
-    plan: free
+      - key: TZ
+        value: UTC
+      - key: UVICORN_TIMEOUT_KEEP_ALIVE
+        value: "120"
+    healthCheckPath: /
+    autoDeploy: true
