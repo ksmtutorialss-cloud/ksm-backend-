@@ -221,26 +221,39 @@ def send_edit_request_approved_email(to_email: str, student_name: str):
 # ============================================================
 # SOCKET.IO SETUP
 # ============================================================
+# ============================================================
+# CREATE FASTAPI APP FIRST
+# ============================================================
+
+app = FastAPI()
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:5173',
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================================
+# SOCKET.IO SETUP
+# ============================================================
+
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
-        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',  # ← YOUR ACTUAL VERCEL URL
+        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
         'http://localhost:3000',
         'http://localhost:5173',
     ],
     async_mode='asgi'
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app",  # ← YOUR ACTUAL VERCEL URL
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+socket_app = socketio.ASGIApp(sio, app)
 
 def verify_admin(authorization: Optional[str] = Header(None)):
     if not authorization:
