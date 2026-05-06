@@ -18,3 +18,9 @@ services:
       - key: TZ
         value: UTC
     healthCheckPath: /
+    autoDeploy: true
+
+databases:
+  - name: ksm-db
+    plan: free
+    postgresMajorVersion: 15
