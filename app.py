@@ -218,17 +218,10 @@ def send_edit_request_approved_email(to_email: str, student_name: str):
     """
     return send_email(to_email, "Profile Update Approved - KSM Tutorials", html)
 
-# ============================================================
-# SOCKET.IO SETUP
-# ============================================================
-# ============================================================
-# CREATE FASTAPI APP FIRST
-# ============================================================
-
-# CREATE APP FIRST
+# 1. CREATE APP FIRST
 app = FastAPI()
 
-# THEN ADD MIDDLEWARE
+# 2. ADD CORS MIDDLEWARE
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -241,7 +234,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# THEN CREATE SOCKET.IO
+# 3. CREATE SOCKET.IO
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
         'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
@@ -251,6 +244,7 @@ sio = socketio.AsyncServer(
     async_mode='asgi'
 )
 
+# 4. CREATE SOCKET APP
 socket_app = socketio.ASGIApp(sio, app)
 
 def verify_admin(authorization: Optional[str] = Header(None)):
