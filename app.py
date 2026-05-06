@@ -16,7 +16,6 @@ import socketio
 import os
 from pathlib import Path
 import psycopg2
-from psycopg2 import pool  # ← FIX: Import pool separately
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from dotenv import load_dotenv
@@ -39,102 +38,55 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-this-secret-key")
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Database connection with keepalive - SIMPLE FIX
-def get_db_url():
-    """Ensure proper SSL parameters"""
-    url = DATABASE_URL
-    if not url:
-        return None
-    if '?' not in url:
-        url += '?sslmode=require'
-    elif 'sslmode' not in url:
-        url += '&sslmode=require'
-    return url
-
-# Create connection pool - FIXED IMPORT
-try:
-    db_url = get_db_url()
-    if db_url:
-        pool = psycopg2.pool.SimpleConnectionPool(  # ← Use psycopg2.pool
-            minconn=1,
-            maxconn=10,
-            dsn=db_url,
-            cursor_factory=RealDictCursor,
-            keepalives=1,
-            keepalives_idle=5,
-            keepalives_interval=2,
-            keepalives_count=3
-        )
-        print("✅ Database connection pool initialized successfully")
-    else:
-        pool = None
-        print("⚠️ No DATABASE_URL found")
-except Exception as e:
-    print(f"⚠️ Failed to initialize pool: {e}")
-    pool = None
+# ===== SIMPLE WORKING DATABASE CONNECTION (NO POOL ISSUES) =====
+def get_db_connection():
+    """Get a direct database connection with retry"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            url = DATABASE_URL
+            if url and '?' not in url:
+                url += '?sslmode=require'
+            elif url and 'sslmode' not in url:
+                url += '&sslmode=require'
+            
+            conn = psycopg2.connect(
+                dsn=url,
+                cursor_factory=RealDictCursor,
+                keepalives=1,
+                keepalives_idle=5,
+                keepalives_interval=2,
+                keepalives_count=3
+            )
+            return conn
+        except Exception as e:
+            print(f"Connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                raise e
 
 @contextmanager
 def get_cursor():
-    """Get database cursor with retry on connection issues"""
-    global pool
+    """Get database cursor - simple and reliable"""
     conn = None
     cursor = None
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        try:
-            if pool is None:
-                # Try to reinitialize pool
-                db_url = get_db_url()
-                if db_url:
-                    pool = psycopg2.pool.SimpleConnectionPool(
-                        minconn=1,
-                        maxconn=10,
-                        dsn=db_url,
-                        cursor_factory=RealDictCursor,
-                        keepalives=1,
-                        keepalives_idle=5,
-                        keepalives_interval=2,
-                        keepalives_count=3
-                    )
-                else:
-                    raise Exception("No database URL")
-            
-            conn = pool.getconn()
-            # Test connection
-            with conn.cursor() as test_cursor:
-                test_cursor.execute("SELECT 1")
-            cursor = conn.cursor()
-            yield cursor
-            conn.commit()
-            break
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except:
-                    pass
-            print(f"Database attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                if pool:
-                    try:
-                        pool.closeall()
-                    except:
-                        pass
-                    pool = None
-            else:
-                raise e
-        finally:
-            if cursor:
-                cursor.close()
-            if conn and pool:
-                try:
-                    pool.putconn(conn)
-                except:
-                    pass
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise e
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
-# SendGrid email helper (YOUR ORIGINAL CODE - unchanged)
+# SendGrid email helper
 def send_email(to_email: str, subject: str, html_content: str):
     """Send email using SendGrid"""
     if not SENDGRID_API_KEY:
@@ -567,20 +519,6 @@ def health_check():
         return {"status": "healthy", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
-
-# ============================================================
-# ALL YOUR ORIGINAL API ENDPOINTS GO HERE (UNCHANGED)
-# ============================================================
-
-# [PASTE ALL YOUR ORIGINAL ENDPOINTS HERE - THEY ARE EXACTLY THE SAME]
-
-# ===== QUICK SUMMARY - ADD ALL YOUR EXISTING ENDPOINTS BELOW =====
-# The rest of your app.py (all your API endpoints) remain EXACTLY as they were.
-# Nothing in your business logic has changed.
-
-# ============================================================
-# RUN SERVER
-# ============================================================
 
 # ============================================================
 # PYDANTIC MODELS
