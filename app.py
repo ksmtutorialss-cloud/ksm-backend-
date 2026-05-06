@@ -282,7 +282,8 @@ def verify_admin(authorization: Optional[str] = Header(None)):
         raise HTTPException(401, "No authorization token")
     token = authorization.replace("Bearer ", "")
     with get_cursor() as cursor:
-        cursor.execute("SELECT token FROM admin_tokens WHERE token=%s AND expires_at > NOW()", (token,))
+        cursor.execute("SELECT token FROM admin_tokens WHERE token=%s AND expires_at > %s", 
+                      (token, datetime.now().isoformat()))
         if not cursor.fetchone():
             raise HTTPException(401, "Invalid or expired token")
     return token
@@ -1109,7 +1110,9 @@ def admin_login(data: AdminLogin):
     with get_cursor() as cursor:
         hashed = hashlib.sha256(data.password.encode()).hexdigest()
         cursor.execute("SELECT * FROM admins WHERE username=%s AND password=%s", (data.username, hashed))
-        if cursor.fetchone():
+        admin = cursor.fetchone()
+        
+        if admin:
             token = hashlib.sha256(f"{data.username}{datetime.now().isoformat()}{uuid.uuid4().hex}".encode()).hexdigest()
             expires_at = (datetime.now() + timedelta(days=1)).isoformat()
             
@@ -1117,6 +1120,7 @@ def admin_login(data: AdminLogin):
                           (token, datetime.now().isoformat(), expires_at))
             
             return {"token": token, "username": data.username}
+        
         raise HTTPException(401, "Invalid credentials")
 
 # ---------- CHANGE ADMIN CREDENTIALS ----------
