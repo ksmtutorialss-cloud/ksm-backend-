@@ -225,9 +225,9 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',
-        'http://localhost:3000',
-        'http://localhost:5173',
+    'https://ksm-frontend-six.vercel.app',  # ← YOUR CURRENT URL
+    'http://localhost:3000',
+    'http://localhost:5173',
     ],
     allow_credentials=True,
     allow_methods=["*"],
