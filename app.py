@@ -520,6 +520,26 @@ def health_check():
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 
+
+@app.get("/api/debug/admin")
+def debug_admin():
+    """Debug endpoint to check admin credentials"""
+    try:
+        with get_cursor() as cursor:
+            cursor.execute("SELECT username, password FROM admins WHERE id=1")
+            admin = cursor.fetchone()
+            if admin:
+                return {
+                    "exists": True,
+                    "username": admin['username'],
+                    "password_hash": admin['password'][:20] + "...",
+                    "note": "Use admin / admin123 to login"
+                }
+            else:
+                return {"exists": False, "message": "No admin found"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # ============================================================
 # PYDANTIC MODELS
 # ============================================================
