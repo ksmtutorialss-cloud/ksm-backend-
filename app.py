@@ -252,6 +252,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         'https://ksm-frontend-six.vercel.app',
+        'https://ksm-frontend-5w2hjxb5f-kotomah-sherif-mahamahs-projects.vercel.app',
+        'https://ksm-frontend-*.vercel.app',  # Allow all Vercel preview deployments
         'http://localhost:3000',
         'http://localhost:5173',
     ],
