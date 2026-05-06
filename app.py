@@ -221,25 +221,19 @@ def send_edit_request_approved_email(to_email: str, student_name: str):
 # ============================================================
 # SOCKET.IO SETUP
 # ============================================================
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
 sio = socketio.AsyncServer(
     cors_allowed_origins=[
-         FRONTEND_URL,  # Replace with your Vercel URL
+        'https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app',  # ← YOUR ACTUAL VERCEL URL
         'http://localhost:3000',
         'http://localhost:5173',
     ],
     async_mode='asgi'
 )
 
-app = FastAPI()
-socket_app = socketio.ASGIApp(sio, app)
-
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-         FRONTEND_URL,  # Replace with your Vercel URL
+        "https://ksm-frontend-8o9qxhd4m-kotomah-sherif-mahamahs-projects.vercel.app",  # ← YOUR ACTUAL VERCEL URL
         "http://localhost:3000",
         "http://localhost:5173",
     ],
