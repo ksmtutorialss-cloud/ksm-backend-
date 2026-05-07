@@ -1123,6 +1123,34 @@ def admin_login(data: AdminLogin):
         
         raise HTTPException(401, "Invalid credentials")
 
+
+
+# ---------- DEBUG LOGIN (REMOVE AFTER FIXING) ----------
+@app.post("/api/admin/login-debug")
+def admin_login_debug(data: AdminLogin):
+    """Debug endpoint to see what's happening"""
+    with get_cursor() as cursor:
+        # Check if admin exists
+        cursor.execute("SELECT * FROM admins WHERE username=%s", (data.username,))
+        admin = cursor.fetchone()
+        
+        if not admin:
+            return {"error": "Admin not found", "username": data.username}
+        
+        # Calculate hash
+        entered_hash = hashlib.sha256(data.password.encode()).hexdigest()
+        stored_hash = admin['password']
+        
+        return {
+            "admin_found": True,
+            "username": admin['username'],
+            "entered_password_length": len(data.password),
+            "entered_hash": entered_hash,
+            "stored_hash": stored_hash,
+            "hashes_match": entered_hash == stored_hash,
+            "message": "✅ SUCCESS! Login would work" if entered_hash == stored_hash else "❌ Password mismatch"
+        }
+        
 # ---------- CHANGE ADMIN CREDENTIALS ----------
 @app.put("/api/admin/change-credentials")
 def change_admin_credentials(data: AdminChangeCredentials, admin: str = Depends(verify_admin)):
