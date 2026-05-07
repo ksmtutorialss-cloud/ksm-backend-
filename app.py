@@ -108,10 +108,29 @@ def send_email(to_email: str, subject: str, html_content: str):
         print(f"❌ Email failed: {str(e)}")
         return False
 
-def send_registration_email(to_email: str, full_name: str, reg_id: str, total_amount: float, courses: list, phone: str):
+def send_registration_email(to_email: str, full_name: str, reg_id: str, total_amount: float, courses: list, phone: str, whatsapp_link: str = ""):
     """Send registration confirmation email"""
     courses_list = "<br>".join([f"• {c} - GHS 120" for c in courses])
-    html = f"""
+    
+    # WhatsApp section
+    whatsapp_section = ""
+    if whatsapp_link and whatsapp_link.strip():
+        whatsapp_section = f'''
+        <h3>WhatsApp Group:</h3>
+        <p>Click the link below to join our official WhatsApp group where all tutorial dates, venues, and updates will be announced:</p>
+        <p style="background: #e8f5e9; padding: 10px; border-radius: 8px;">
+            <a href="{whatsapp_link}" style="color: #25D366; font-weight: bold;">👉 Join WhatsApp Group 👈</a>
+        </p>
+        <p><strong>Important:</strong> All communication will be through this WhatsApp group. Please join immediately after registration.</p>
+        '''
+    else:
+        whatsapp_section = f'''
+        <h3>WhatsApp Group:</h3>
+        <p>A WhatsApp group invite link will be sent to your phone number: <strong>{phone}</strong></p>
+        <p>All tutorial dates and venues will be announced in the WhatsApp group!</p>
+        '''
+    
+    html = f'''
     <!DOCTYPE html>
     <html>
     <head>
@@ -154,9 +173,7 @@ def send_registration_email(to_email: str, full_name: str, reg_id: str, total_am
                     <li><strong>Location:</strong> UCC IT Department Labs</li>
                 </ul>
                 
-                <h3>WhatsApp Group:</h3>
-                <p>A WhatsApp group invite link will be sent to your phone number: <strong>{phone}</strong></p>
-                <p>All tutorial dates and venues will be announced in the WhatsApp group!</p>
+                {whatsapp_section}
                 
                 <h3>Next Steps:</h3>
                 <ol>
@@ -177,7 +194,7 @@ def send_registration_email(to_email: str, full_name: str, reg_id: str, total_am
         </div>
     </body>
     </html>
-    """
+    '''
     return send_email(to_email, "✅ Registration Confirmation - KSM Tutorials", html)
 
 def send_password_change_confirmation(to_email: str, full_name: str):
@@ -765,6 +782,11 @@ async def register(student: StudentRegister, background_tasks: BackgroundTasks):
             if datetime.now() > datetime.fromisoformat(deadline_str):
                 raise HTTPException(400, "Registration closed")
         
+        # Fetch WhatsApp link from settings
+        cursor.execute("SELECT value FROM settings WHERE key='whatsapp_link'")
+        whatsapp_row = cursor.fetchone()
+        whatsapp_link = whatsapp_row['value'] if whatsapp_row else ""
+        
         reg_id = f"KSM-{uuid.uuid4().hex[:8].upper()}"
         total = len(student.courses) * 120
         
@@ -779,7 +801,7 @@ async def register(student: StudentRegister, background_tasks: BackgroundTasks):
         """, (reg_id, student.full_name, student.student_id, student.email, student.phone, 
               hashed_password, student.programme, student.level, json.dumps(student.courses), total, datetime.now().isoformat()))
         
-        # Send email confirmation
+        # Send email confirmation with WhatsApp link
         background_tasks.add_task(
             send_registration_email, 
             student.email, 
@@ -787,7 +809,8 @@ async def register(student: StudentRegister, background_tasks: BackgroundTasks):
             reg_id, 
             total, 
             student.courses, 
-            student.phone
+            student.phone,
+            whatsapp_link
         )
         
         await sio.emit('new_registration', {'name': student.full_name})
@@ -800,7 +823,6 @@ async def register(student: StudentRegister, background_tasks: BackgroundTasks):
             "email": student.email,
             "phone": student.phone
         }
-
 # ---------- STUDENT LOGIN ----------
 @app.post("/api/student/login")
 def student_login(data: StudentLogin):
