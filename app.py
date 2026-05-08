@@ -543,6 +543,14 @@ def health_check():
         return {"status": "unhealthy", "error": str(e)}
 
 
+@app.get("/ping")
+async def ping():
+    """
+    Lightweight endpoint for keep‑alive pings.
+    Returns a minimal response with a timestamp.
+    """
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+    
 @app.get("/api/debug/admin")
 def debug_admin():
     """Debug endpoint to check admin credentials"""
