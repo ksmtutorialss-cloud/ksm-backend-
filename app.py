@@ -545,10 +545,9 @@ def health_check():
 
 @app.get("/ping")
 async def ping():
-    """
-    Lightweight endpoint for keep‑alive pings.
-    Returns a minimal response with a timestamp.
-    """
+    with get_cursor() as cursor:
+        cursor.execute("SELECT 1")   # trivial query
+        cursor.fetchone()
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
     
 @app.get("/api/debug/admin")
