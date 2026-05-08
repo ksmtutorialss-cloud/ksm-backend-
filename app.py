@@ -544,9 +544,14 @@ def health_check():
 
 
 @app.get("/ping")
+@app.head("/ping")
 async def ping():
+    """
+    Lightweight endpoint for keep‑alive pings.
+    Supports both GET and HEAD requests.
+    """
     with get_cursor() as cursor:
-        cursor.execute("SELECT 1")   # trivial query
+        cursor.execute("SELECT 1")   # optional – to also keep Neon alive
         cursor.fetchone()
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
     
